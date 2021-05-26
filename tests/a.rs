@@ -1,8 +1,9 @@
 use bebop::{bebop, Bebop};
 
-bebop!("examples/a.bop");
+bebop!("tests/a.bop");
 
-fn main() {
+#[test]
+fn media_message() {
     let data = MediaMessage {
         codec: Some(VideoCodec::H264),
         data: Some(VideoData {
