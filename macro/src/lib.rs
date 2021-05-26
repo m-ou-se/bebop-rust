@@ -47,5 +47,8 @@ pub fn read_bebop(input: TokenStream1) -> TokenStream1 {
         src: &src,
     };
 
-    parser.parse_file().into()
+    match parser.parse_file() {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.into(),
+    }
 }

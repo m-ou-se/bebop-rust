@@ -10,6 +10,15 @@ pub struct Parser<'a> {
     pub crate_path: Ident,
 }
 
+macro_rules! error {
+    ($($t:tt)*) => {
+        {
+            let msg = format!($($t)*);
+            Err(quote!(compile_error! { #msg }))
+        }
+    }
+}
+
 impl<'a> Parser<'a> {
     pub fn skip_whitespace(&mut self) {
         loop {
@@ -41,65 +50,70 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_identifier(&mut self) -> &'a str {
+    pub fn parse_identifier(&mut self) -> Result<&'a str, TokenStream> {
         match self.next_token() {
-            Some(ident) if ident.starts_with(|c: char| c.is_alphabetic() || c == '_') => ident,
-            Some(token) => panic!("expected identifier, but got {:?}", token),
-            None => panic!("missing identifier"),
+            Some(ident) if ident.starts_with(|c: char| c.is_alphabetic() || c == '_') => Ok(ident),
+            Some(token) => error!("expected identifier, but got {:?}", token),
+            None => error!("missing identifier"),
         }
     }
 
-    pub fn parse_number(&mut self) -> u32 {
+    pub fn parse_number(&mut self) -> Result<u32, TokenStream> {
         match self.next_token() {
             Some(token) => {
                 if let Some((_, hex)) = token.split_once("0x") {
-                    u32::from_str_radix(hex, 16)
-                        .unwrap_or_else(|_| panic!("invalid hexadecimal number"))
+                    match u32::from_str_radix(hex, 16) {
+                        Ok(n) => Ok(n),
+                        Err(_) => error!("invalid hexadecimal number"),
+                    }
                 } else {
-                    u32::from_str_radix(token, 10).unwrap_or_else(|_| panic!("invalid number"))
+                    match u32::from_str_radix(token, 10) {
+                        Ok(n) => Ok(n),
+                        Err(_) => error!("invalid number"),
+                    }
                 }
             }
-            None => panic!("missing number"),
+            None => error!("missing number"),
         }
     }
 
-    pub fn parse_string_literal(&mut self) -> String {
+    pub fn parse_string_literal(&mut self) -> Result<String, TokenStream> {
         self.skip_whitespace();
         if let Some(s) = self.src.strip_prefix('\'') {
             match s.split_once('\'') {
-                None => panic!("missing end of single quoted string literal"),
+                None => error!("missing end of single quoted string literal"),
                 Some((literal, rest)) => {
                     self.src = rest;
-                    literal.into()
+                    Ok(literal.into())
                 }
             }
         } else if let Some(s) = self.src.strip_prefix('"') {
             match s.split_once('"') {
-                None => panic!("missing end of double quoted string literal"),
+                None => error!("missing end of double quoted string literal"),
                 Some((literal, rest)) => {
                     self.src = rest;
-                    literal.into()
+                    Ok(literal.into())
                 }
             }
         } else {
-            panic!("expected string literal");
+            error!("expected string literal")
         }
     }
 
-    pub fn parse_type(&mut self) -> TokenStream {
+    pub fn parse_type(&mut self) -> Result<TokenStream, TokenStream> {
         let mut t = match self.next_token() {
             Some("map") => {
-                self.expect("[");
-                let key = self.parse_type();
-                self.expect(",");
-                let value = self.parse_type();
-                self.expect("]");
+                self.expect("[")?;
+                let key = self.parse_type()?;
+                self.expect(",")?;
+                let value = self.parse_type()?;
+                self.expect("]")?;
                 quote!(std::collections::HashMap<#key, #value>)
             }
             Some("array") => {
-                self.expect("[");
-                let element = self.parse_type();
-                self.expect("]");
+                self.expect("[")?;
+                let element = self.parse_type()?;
+                self.expect("]")?;
                 quote!(Vec<#element>)
             }
             Some("string") => quote!(String),
@@ -127,14 +141,14 @@ impl<'a> Parser<'a> {
                 let ident = Ident::new(name, Span::call_site());
                 quote!(#ident)
             }
-            None => panic!("missing type"),
+            None => return error!("missing type"),
         };
         while self.is_next("[") {
-            self.expect("[");
-            self.expect("]");
+            self.expect("[")?;
+            self.expect("]")?;
             t = quote!(Vec<#t>);
         }
-        t
+        Ok(t)
     }
 
     pub fn is_next(&mut self, next: &str) -> bool {
@@ -142,57 +156,57 @@ impl<'a> Parser<'a> {
         self.src.starts_with(next)
     }
 
-    pub fn expect(&mut self, expected: &str) {
+    pub fn expect(&mut self, expected: &str) -> Result<(), TokenStream> {
         match self.next_token() {
-            Some(token) if token == expected => {}
-            Some(token) => panic!("expected {:?}, but got {:?}", expected, token),
-            None => panic!("missing {:?}", expected),
+            Some(token) if token == expected => Ok(()),
+            Some(token) => error!("expected {:?}, but got {:?}", expected, token),
+            None => error!("missing {:?}", expected),
         }
     }
 
-    pub fn parse_opcode(&mut self) -> Option<u32> {
+    pub fn parse_opcode(&mut self) -> Result<Option<u32>, TokenStream> {
         if !self.is_next("[") {
-            return None;
+            return Ok(None);
         }
-        self.expect("[");
-        self.expect("opcode");
-        self.expect("(");
+        self.expect("[")?;
+        self.expect("opcode")?;
+        self.expect("(")?;
         self.skip_whitespace();
         let opcode = if self.src.starts_with(|c: char| c.is_numeric()) {
-            self.parse_number()
+            self.parse_number()?
         } else {
-            let s = self.parse_string_literal();
+            let s = self.parse_string_literal()?;
             match <[u8; 4]>::try_from(s.as_bytes()) {
                 Ok(bytes) => u32::from_le_bytes(bytes),
-                Err(_) => panic!("opcodes must be four bytes"),
+                Err(_) => return error!("opcodes must be four bytes"),
             }
         };
-        self.expect(")");
-        self.expect("]");
-        Some(opcode)
+        self.expect(")")?;
+        self.expect("]")?;
+        Ok(Some(opcode))
     }
 
-    pub fn parse_deprecated(&mut self) -> Option<TokenStream> {
+    pub fn parse_deprecated(&mut self) -> Result<Option<TokenStream>, TokenStream> {
         if !self.is_next("[") {
-            return None;
+            return Ok(None);
         }
-        self.expect("[");
-        self.expect("deprecated");
+        self.expect("[")?;
+        self.expect("deprecated")?;
         let attr = if self.is_next("]") {
             quote!(#[deprecated])
         } else {
-            self.expect("(");
+            self.expect("(")?;
             self.skip_whitespace();
-            let message = self.parse_string_literal();
-            self.expect(")");
+            let message = self.parse_string_literal()?;
+            self.expect(")")?;
             quote!(#[deprecated = #message])
         };
-        self.expect("]");
-        Some(attr)
+        self.expect("]")?;
+        Ok(Some(attr))
     }
 
-    pub fn parse_definition(&mut self) -> (Ident, TokenStream) {
-        let opcode = self.parse_opcode();
+    pub fn parse_definition(&mut self) -> Result<(Ident, TokenStream), TokenStream> {
+        let opcode = self.parse_opcode()?;
         let token = match self.next_token() {
             Some("readonly") => self.next_token(),
             t => t,
@@ -200,23 +214,23 @@ impl<'a> Parser<'a> {
         match token {
             Some("enum") => {
                 if opcode.is_some() {
-                    panic!("enums cannot have an opcode");
+                    return error!("enums cannot have an opcode");
                 }
-                let name = Ident::new(self.parse_identifier(), Span::call_site());
+                let name = Ident::new(self.parse_identifier()?, Span::call_site());
                 let mut names = Vec::new();
                 let mut values = Vec::new();
                 let mut attrs = Vec::new();
-                self.expect("{");
+                self.expect("{")?;
                 while !self.is_next("}") {
-                    attrs.push(self.parse_deprecated());
-                    names.push(Ident::new(self.parse_identifier(), Span::call_site()));
-                    self.expect("=");
-                    values.push(self.parse_number());
-                    self.expect(";");
+                    attrs.push(self.parse_deprecated()?);
+                    names.push(Ident::new(self.parse_identifier()?, Span::call_site()));
+                    self.expect("=")?;
+                    values.push(self.parse_number()?);
+                    self.expect(";")?;
                 }
-                self.expect("}");
+                self.expect("}")?;
                 let bebop = &self.crate_path;
-                (
+                Ok((
                     name.clone(),
                     quote!(
                         #[repr(u32)]
@@ -240,22 +254,22 @@ impl<'a> Parser<'a> {
                             }
                         }
                     ),
-                )
+                ))
             }
             Some("struct") => {
-                let name = Ident::new(self.parse_identifier(), Span::call_site());
-                self.expect("{");
+                let name = Ident::new(self.parse_identifier()?, Span::call_site());
+                self.expect("{")?;
                 let mut types = Vec::new();
                 let mut names = Vec::new();
                 while !self.is_next("}") {
-                    types.push(self.parse_type());
-                    names.push(Ident::new(self.parse_identifier(), Span::call_site()));
-                    self.expect(";");
+                    types.push(self.parse_type()?);
+                    names.push(Ident::new(self.parse_identifier()?, Span::call_site()));
+                    self.expect(";")?;
                 }
-                self.expect("}");
+                self.expect("}")?;
                 let bebop = &self.crate_path;
                 let opcode = opcode.into_iter();
-                (
+                Ok((
                     name.clone(),
                     quote!(
                         #[derive(Clone, Debug, PartialEq)]
@@ -278,32 +292,32 @@ impl<'a> Parser<'a> {
                             }
                         }
                     ),
-                )
+                ))
             }
             Some("message") => {
-                let name = Ident::new(self.parse_identifier(), Span::call_site());
-                self.expect("{");
+                let name = Ident::new(self.parse_identifier()?, Span::call_site());
+                self.expect("{")?;
                 let mut attrs = Vec::new();
                 let mut indices = Vec::new();
                 let mut types = Vec::new();
                 let mut names = Vec::new();
                 while !self.is_next("}") {
-                    attrs.push(self.parse_deprecated());
-                    let index = self.parse_number();
+                    attrs.push(self.parse_deprecated()?);
+                    let index = self.parse_number()?;
                     if index > 255 {
-                        panic!("message field index must be <= 255, but got {}", index);
+                        return error!("message field index must be <= 255, but got {}", index);
                     }
                     indices.push(index as u8);
-                    self.expect("-");
-                    self.expect(">");
-                    types.push(self.parse_type());
-                    names.push(Ident::new(self.parse_identifier(), Span::call_site()));
-                    self.expect(";");
+                    self.expect("-")?;
+                    self.expect(">")?;
+                    types.push(self.parse_type()?);
+                    names.push(Ident::new(self.parse_identifier()?, Span::call_site()));
+                    self.expect(";")?;
                 }
-                self.expect("}");
+                self.expect("}")?;
                 let bebop = &self.crate_path;
                 let opcode = opcode.into_iter();
-                (
+                Ok((
                     name.clone(),
                     quote!(
                         #[derive(Clone, Debug, Default, PartialEq)]
@@ -346,30 +360,30 @@ impl<'a> Parser<'a> {
                             }
                         }
                     ),
-                )
+                ))
             }
             Some("union") => {
-                let name = Ident::new(self.parse_identifier(), Span::call_site());
-                self.expect("{");
+                let name = Ident::new(self.parse_identifier()?, Span::call_site());
+                self.expect("{")?;
                 let mut defs = TokenStream::new();
                 let mut indices = Vec::new();
                 let mut names = Vec::new();
                 while !self.is_next("}") {
-                    let index = self.parse_number();
+                    let index = self.parse_number()?;
                     if index > 255 {
-                        panic!("union index must be <= 255, but got {}", index);
+                        return error!("union index must be <= 255, but got {}", index);
                     }
                     indices.push(index as u8);
-                    self.expect("-");
-                    self.expect(">");
-                    let (field_name, field_def) = self.parse_definition();
+                    self.expect("-")?;
+                    self.expect(">")?;
+                    let (field_name, field_def) = self.parse_definition()?;
                     names.push(field_name);
                     defs.extend(field_def);
                 }
-                self.expect("}");
+                self.expect("}")?;
                 let bebop = &self.crate_path;
                 let opcode = opcode.into_iter();
-                (
+                Ok((
                     name.clone(),
                     quote!(
                         #defs
@@ -410,41 +424,47 @@ impl<'a> Parser<'a> {
                             }
                         }
                     ),
-                )
+                ))
             }
-            Some(token) => panic!("expected definition, but got {:?}", token),
-            None => panic!("missing definiton"),
+            Some(token) => error!("expected definition, but got {:?}", token),
+            None => error!("missing definiton"),
         }
     }
 
-    pub fn parse_file(&mut self) -> TokenStream {
-        let mut rust = TokenStream::new();
+    pub fn parse_file(&mut self) -> Result<TokenStream, TokenStream> {
+        let file = self.file.to_string_lossy();
+        let mut rust = quote!(
+            // this triggers recompilation when the file is changed.
+            const _: () = {
+                include_str!(#file);
+            };
+        );
         loop {
             self.skip_whitespace();
             if self.src.is_empty() {
                 break;
             }
             if self.src.starts_with("import") {
-                self.expect("import");
+                self.expect("import")?;
                 let file = self
                     .file
                     .parent()
                     .unwrap_or(Path::new("."))
-                    .join(self.parse_string_literal());
+                    .join(self.parse_string_literal()?);
                 let src = match std::fs::read_to_string(&file) {
                     Ok(src) => src,
-                    Err(e) => panic!("unable to open {:?}: {}", file, e),
+                    Err(e) => return error!("unable to open {:?}: {}", file, e),
                 };
                 let mut parser = Parser {
                     file: &file,
                     crate_path: self.crate_path.clone(),
                     src: &src,
                 };
-                rust.extend(parser.parse_file());
+                rust.extend(parser.parse_file()?);
             } else {
-                rust.extend(self.parse_definition().1);
+                rust.extend(self.parse_definition()?.1);
             }
         }
-        rust
+        Ok(rust)
     }
 }
