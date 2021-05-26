@@ -133,13 +133,6 @@ impl<K: Bebop + Hash + Eq, V: Bebop> Bebop for HashMap<K, V> {
         }
     }
 }
-// bytes (Vec<u8>?)
-// Vec<T>
-// Map<K, V>
-//impl<T: Bebop> Bebop for Vec<T> {
-//    fn read_from(read: &mut impl Read) -> Result<Self>;
-//    fn encode(&self, write: &mut impl Write) -> Result<()>;
-//}
 
 #[cfg(test)]
 mod test {
