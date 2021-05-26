@@ -1,0 +1,3 @@
+enum VideoCodec { H264=0; H265=1; }
+struct VideoData { float64 time; uint32 width; uint32 height; byte[] fragment; }
+message MediaMessage { 1 -> VideoCodec codec; 2 -> VideoData data; }
