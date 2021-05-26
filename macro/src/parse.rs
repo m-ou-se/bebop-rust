@@ -304,8 +304,8 @@ impl<'a> Parser<'a> {
                 while !self.is_next("}") {
                     attrs.push(self.parse_deprecated()?);
                     let index = self.parse_number()?;
-                    if index > 255 {
-                        return error!("message field index must be <= 255, but got {}", index);
+                    if index < 1 || index > 255 {
+                        return error!("message field index must be in the range 1..=255, but got {}", index);
                     }
                     indices.push(index as u8);
                     self.expect("-")?;
