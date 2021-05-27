@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-bebop-macro = { path = "macro" }
+bebop-macro = { path = "macro", version = "=0.1.0" }
 
 [workspace]
