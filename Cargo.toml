@@ -2,6 +2,7 @@
 name = "bebop"
 version = "0.1.0"
 edition = "2018"
+license = "BSD-2-Clause"
 
 [dependencies]
 bebop-macro = { path = "macro", version = "=0.1.0" }
